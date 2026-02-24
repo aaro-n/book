@@ -1,0 +1,1080 @@
+# Go项目结构 - 代码组织和模块划分
+
+## 📁 完整项目目录树
+
+```
+pdf-manager/
+│
+├── cmd/               # 可执行文件入口
+│   └── main/
+│       └── main.go              # 应用启动（<50行）
+│
+├── internal/                   # 内部包（不对外暴露）
+│   │
+│   ├── config/                   # 配置管理
+│   │   ├── config.go            # 配置结构和加载
+│   │   ├── database.go          # 数据库连接
+│   │   └── logger.go            # 日志初始化
+│   │
+│   ├── models/                   # 数据模型
+│   │   ├── user.go         # 用户模型
+│   │   ├── document.go          # 文档模型
+│   │   ├── bookmark.go          # 标记模型
+│   │   ├── search.go            # 搜索模型
+│   │   └── segment.go           # 分词模型
+│   │
+│   ├── repository/             # 数据访问层
+│   │   ├── user_repo.go       # 用户仓库
+│   │   ├── document_repo.go     # 文档仓库
+│   │   ├── bookmark_repo.go     # 标记仓库（高亮/注释/书签）
+│   │   ├── search_repo.go       # 搜索仓库
+│   │   └── repository.go      # 公共接口
+│   │
+│   ├── service/                  # 业务逻辑层
+│   │   ├── auth_service.go      # 认证服务
+│   │   ├── document_service.go  # 文档处理服务
+│   │   ├── bookmark_service.go  # 标记管理服务
+│   │   ├── search_service.go    # 搜索协调服务
+│   │   ├── segment_service.go   # 分词服务（GSE+Jieba）
+│   │   └── s3_service.go        # S3操作服务
+│   │
+│   ├── handler/          # HTTP处理层
+│   │   ├── auth_handler.go      # 认证接口
+│   │   ├── document_handler.go  # 文档接口
+│   │   ├── bookmark_handler.go  # 标记接口
+│   │   ├── search_handler.go    # 搜索接口
+│   │   ├── admin_handler.go     # 后台管理接口
+│   │   └── handler.go           # 公共处理
+│   │
+│   ├── middleware/               # 中间件
+│   │   ├── auth.go              # JWT认证中间件
+│   │   ├── error.go             # 错误处理中间件
+│   │   ├── logger.go            # 日志中间件
+│   │   └── cors.go              # CORS中间件
+│   │
+│   ├── util/              # 工具函数
+│   │   ├── errors.go            # 错误定义和处理
+│   │   ├── response.go          # 标准响应格式
+│   │   ├── validator.go         # 数据验证
+│   │   ├── segment.go           # 分词工具（gse/jieba接口）
+│   │   ├── segment_cache.go     # 分词缓存实现
+│   │   ├── pdf.go       # PDF处理工具
+│   │   ├── hash.go            # 哈希和加密工具
+│   │   └── memory.go          # 内存监控
+│   │
+│   └── db/        # 数据库相关
+│       └── migrations/           # 数据库迁移脚本
+│           ├── 001_init_schema.sql
+│           ├── 002_add_indexes.sql
+│           └── 003_add_constraints.sql
+│
+├── api/                 # API文档（可选）
+│   └── openapi.yaml       # OpenAPI规范
+│
+├── tests/                        # 测试文件
+│   ├── unit/                    # 单元测试
+│   │   ├── service_test.go
+│   │   ├── repository_test.go
+│   │   └── util_test.go
+│   ├── integration/             # 集成测试
+│   │   └── api_test.go
+│   └── fixtures/            # 测试数据
+│       └── test_data.sql
+│
+├── scripts/                      # 脚本
+│   ├── init-db.sh              # 初始化数据库
+│   ├── seed.sh           # 种子数据
+│   └── migrate.sh           # 数据迁移
+│
+├── config/                  # 配置文件
+│   ├── app.yaml              # 应用配置（本地）
+│   ├── app.prod.yaml        # 生产配置
+│   ├── custom_dict.txt         # 自定义词库
+│   └── stopwords.txt           # 停用词表
+│
+├── web/             # 前端项目（可选）
+│   ├── src/
+│   │   ├── components/         # React组件
+│   │   ├── pages/              # 页面
+│   │   ├── services/           # HTTP服务
+│   │   └── App.tsx
+│   ├── package.json
+│   └── tsconfig.json
+│
+├── docker-compose.yml           # Docker编排
+├── Dockerfile         # 应用镜像
+├── go.mod                    # Go模块定义
+├── go.sum                     # 依赖锁定
+├── .env.example        # 环境变量示例
+├── .gitignore
+├── README.md                # 项目说明
+└── Makefile                     # 常用命令
+```
+
+---
+
+## 📄 各文件职责说明
+
+### cmd/main/main.go（应用入口）
+
+```go
+package main
+
+import (
+    "fmt"
+    "myapp/internal/config"
+    "myapp/internal/repository"
+    "myapp/internal/service"
+    "myapp/internal/handler"
+    "github.com/gin-gonic/gin"
+)
+
+func main() {
+    // 1. 加载配置
+    cfg, err := config.Load()
+    if err != nil {
+        panic(err)
+    }
+    
+    // 2. 初始化数据库
+    db, err := config.InitDB(cfg)
+    if err != nil {
+        panic(err)
+    }
+    defer db.Close()
+    
+    // 3. 初始化分词引擎
+    segmenter, err := initSegmenter(cfg)
+    if err != nil {
+        panic(err)
+    }
+    
+    // 4. 初始化仓库
+    repos := repository.NewRepositories(db)
+  
+    // 5. 初始化服务
+    services := service.NewServices(repos, segmenter)
+    
+    // 6. 初始化处理器
+    handlers := handler.NewHandlers(services)
+    
+    // 7. 创建Gin引擎并注册路由
+    r := gin.Default()
+    setupRoutes(r, handlers)
+    
+    // 8. 启动服务器
+    fmt.Printf("Server listening on :%d\n", cfg.Server.Port)
+    r.Run(fmt.Sprintf(":%d", cfg.Server.Port))
+}
+
+func setupRoutes(r *gin.Engine, h *handler.Handlers) {
+    // 认证路由
+    auth := r.Group("/api/auth")
+    auth.POST("/register", h.Auth.Register)
+    auth.POST("/login", h.Auth.Login)
+    
+    // 需认证的路由
+    api := r.Group("/api")
+    api.Use(middleware.AuthRequired())
+    
+    // 文档路由
+    api.POST("/documents/upload", h.Document.Upload)
+    api.GET("/documents", h.Document.List)
+    api.GET("/documents/:id", h.Document.GetByID)
+    
+  // 标记路由
+    api.POST("/bookmarks", h.Bookmark.Create)
+    api.GET("/documents/:id/bookmarks", h.Bookmark.List)
+    
+    // 搜索路由
+    api.POST("/search", h.Search.Search)
+    api.POST("/marks/search", h.Search.SearchMarks)
+    
+    // 后台管理
+    admin := r.Group("/api/admin")
+    admin.Use(middleware.AdminRequired())
+    
+    admin.GET("/segment/config", h.Admin.GetSegmentConfig)
+    admin.PUT("/segment/config", h.Admin.UpdateSegmentConfig)
+    admin.POST("/segment/test", h.Admin.TestSegment)
+}
+```
+
+**约束**：<50行（不包括import）
+
+---
+
+### internal/models 数据模型
+
+**特点**：
+- 仅定义结构体和常量
+- 不涉及业务逻辑
+- 每个文件<100行
+
+```go
+// internal/models/document.go
+package models
+
+type Document struct {
+    ID            int       `json:"id"`
+    UserID        int       `json:"user_id"`
+    Title         string    `json:"title"`
+    S3Key         string    `json:"s3_key"`
+    FileHash      string    `json:"file_hash"`
+    PageCount     int       `json:"page_count"`
+    Language      string    `json:"language"`
+    CreatedAt     time.Time `json:"created_at"`
+}
+
+// 常量定义
+const (
+    DocumentStatusActive   = "active"
+    DocumentStatusArchived = "archived"
+)
+```
+
+---
+
+### internal/repository 数据访问层
+
+**职责**：
+- 直接操作数据库
+- 不涉及业务逻辑
+- 不涉及HTTP处理
+- 每个文件<120行
+
+```go
+// internal/repository/document_repo.go
+package repository
+
+type DocumentRepository struct {
+    db *sql.DB
+}
+
+// GetByID 根据ID获取文档
+func (r *DocumentRepository) GetByID(ctx context.Context, id int) (*models.Document, error) {
+    // 仅做数据库查询
+}
+
+// Create 创建新文档
+func (r *DocumentRepository) Create(ctx context.Context, doc *models.Document) error {
+    // 仅做INSERT操作
+}
+
+// ListByUser 获取用户的文档列表
+func (r *DocumentRepository) ListByUser(ctx context.Context, userID int, limit, offset int) ([]*models.Document, error) {
+    // 仅做SELECT操作
+}
+```
+
+---
+
+### internal/service 业务逻辑层
+
+**职责**：
+- 业务流程编排
+- 调用多个repository
+- 不涉及HTTP处理
+- 每个文件<150行
+
+```go
+// internal/service/document_service.go
+package service
+
+type DocumentService struct {
+    docRepo     *repository.DocumentRepository
+  s3Service   *S3Service
+    segmenter   *Segmenter
+}
+
+// ProcessNewDocument 处理上传的新文档
+func (s *DocumentService) ProcessNewDocument(ctx context.Context, docID int) error {
+    // 1. 获取文档元数据
+    doc, err := s.docRepo.GetByID(ctx, docID)
+    if err != nil {
+        return err
+    }
+    
+    // 2. 从S3下载PDF
+    pdfData, err := s.s3Service.GetObject(ctx, doc.S3Key)
+    if err != nil {
+        return err
+    }
+    
+    // 3. 提取文本并分词
+    content, err := s.extractAndSegment(pdfData, doc.Language)
+    if err != nil {
+        return err
+    }
+    
+    // 4. 保存内容到数据库
+    return s.docRepo.SaveContent(ctx, docID, content)
+}
+```
+
+---
+
+### internal/handler HTTP处理层
+
+**职责**：
+- 处理HTTP请求和响应
+- 调用service层
+- 不涉及数据库操作
+- 每个文件<100行
+
+```go
+// internal/handler/document_handler.go
+package handler
+
+type DocumentHandler struct {
+    service *service.DocumentService
+}
+
+// Upload 处理文件上传
+func (h *DocumentHandler) Upload(c *gin.Context) {
+    // 1. 解析请求
+    file, err := c.FormFile("file")
+    if err != nil {
+        c.JSON(400, gin.H{"error": "invalid file"})
+        return
+    }
+    
+    // 2. 调用service
+    docID, err := h.service.UploadDocument(c.Request.Context(), file)
+    if err != nil {
+        c.JSON(500, gin.H{"error": err.Error()})
+        return
+    }
+    
+    // 3. 返回响应
+    c.JSON(200, gin.H{"document_id": docID})
+}
+```
+
+---
+
+### internal/util 工具函数
+
+**特点**：
+- 可复用的通用函数
+- 无状态（或少状态）
+- 每个文件<80行
+
+```go
+// internal/util/segment.go - 分词工具
+package util
+
+// SegmentText 分词（调用segment_service）
+func SegmentText(text string) *models.SegmentResult {
+    // 使用全局segment引擎
+    return globalSegmenter.Segment(text)
+}
+
+// internal/util/response.go - 标准响应
+package util
+
+// SuccessResponse 成功响应
+func SuccessResponse(c *gin.Context, code int, data interface{}) {
+    c.JSON(code, gin.H{
+        "success": true,
+        "data":    data,
+    })
+}
+
+// ErrorResponse 错误响应
+func ErrorResponse(c *gin.Context, code int, err *AppError) {
+    c.JSON(code, gin.H{
+     "success": false,
+        "error": gin.H{
+          "code":    err.Code,
+            "message": err.Message,
+        },
+    })
+}
+```
+
+---
+
+## 🔄 依赖注入模式
+
+为了实现松耦合，采用依赖注入：
+
+```go
+// internal/service/services.go
+package service
+
+type Services struct {
+    Auth     *AuthService
+    Document *DocumentService
+    Bookmark *BookmarkService
+    Search   *SearchService
+}
+
+// NewServices 创建所有服务
+func NewServices(repos *repository.Repositories, segmenter *util.Segmenter) *Services {
+    return &Services{
+      Auth:     NewAuthService(repos.User),
+        Document: NewDocumentService(repos.Document, repos.Content, s3Service, segmenter),
+     Bookmark: NewBookmarkService(repos.Bookmark, searchService),
+        Search:   NewSearchService(repos.Search, searchEngineManager),
+    }
+}
+
+// internal/handler/handlers.go
+package handler
+
+type Handlers struct {
+    Auth     *AuthHandler
+    Document *DocumentHandler
+    Bookmark *BookmarkHandler
+    Search   *SearchHandler
+    Admin    *AdminHandler
+}
+
+// NewHandlers 创建所有处理器
+func NewHandlers(services *service.Services) *Handlers {
+    return &Handlers{
+        Auth:     NewAuthHandler(services.Auth),
+        Document: NewDocumentHandler(services.Document),
+        Bookmark: NewBookmarkHandler(services.Bookmark),
+        Search:   NewSearchHandler(services.Search),
+        Admin:    NewAdminHandler(services.Segment, services.Search),
+    }
+}
+```
+
+---
+
+## 📊 模块依赖关系
+
+```
+cmd/main.go
+    ↓
+config/      ← 初始化
+    ↓
+handler/ ← 不直接依赖model/repository
+    ↓
+service/  ← 不依赖handler
+    ↓
+repository/ ← 不依赖service/handler
+    ↓
+models/ ← 底层，不依赖其他module
+    ↓
+util/ ← 工具层，仅被其他层使用
+```
+
+**原则**：
+- 箭头方向表示依赖关系
+- 上层依赖下层，下层不依赖上层
+- 同层之间尽量不相互依赖
+
+---
+
+## 🧪 测试文件对应关系
+
+```
+internal/
+├── service/
+│   ├── document_service.go
+│   └── document_service_test.go ← 测试
+│
+├── repository/
+│   ├── document_repo.go
+│   └── document_repo_test.go ← 测试
+│
+└── util/
+    ├── segment.go
+    └── segment_test.go ← 测试
+```
+
+**命名约定**：`xxx.go` 对应 `xxx_test.go`
+
+---
+
+## go.mod 依赖清单
+
+```go
+module pdf-manager
+
+go 1.22
+
+require (
+    // Web框架
+    github.com/gin-gonic/gin v1.9.0
+    
+    // 数据库
+    github.com/lib/pq v1.10.9
+    
+    // 缓存和队列
+    github.com/go-redis/redis/v8 v8.11.5
+    
+    // AWS S3
+    github.com/aws/aws-sdk-go-v2 v1.21.0
+    
+    // 认证
+    github.com/golang-jwt/jwt/v5 v5.0.0
+    
+    // 分词
+    github.com/go-echarts/go-echarts v1.0.0  // gse
+    // jieba可选：github.com/jdkato/prose/v2
+    
+    // PDF处理
+    github.com/pdfcpu/pdfcpu v0.4.0
+    
+    // 搜索引擎
+    github.com/elastic/go-elasticsearch/v8 v8.10.0  // Elasticsearch
+    github.com/meilisearch/meilisearch-go v0.21.0   // Meilisearch（可选）
+    
+    // 工具
+    github.com/joho/godotenv v1.5.1       // 环境变量
+    github.com/google/uuid v1.3.0         // UUID
+    go.uber.org/zap v1.26.0       // 日志
+)
+```
+
+---
+
+## 总结
+
+- **简洁清晰** - 每个模块职责单一
+- **易于测试** - 依赖注入便于mock
+- **易于扩展** - 新功能添加新文件
+- **AI友好** - 文件大小限制，易于编程
+
+\n\n
+# 数据库设计 - PostgreSQL 18 完整表结构
+
+## 🎯 设计原则
+1. **源文件保护** - 源PDF永远不修改，所有标记分离存储
+2. **多语言支持** - 支持中日韩等非字母文字全文搜索
+3. **性能优化** - 关键字段建索引，避免N+1查询
+4. **审计追踪** - 关键操作记录历史日志（可选）
+5. **数据一致性** - 外键约束确保参考完整性
+---
+
+## 📋 表结构设计
+
+### 1. 用户表 - users
+
+```sql
+CREATE TABLE users (
+    id SERIAL PRIMARY KEY,
+    
+    -- 认证信息
+    email VARCHAR(255) UNIQUE NOT NULL,
+    username VARCHAR(100) UNIQUE NOT NULL,
+    password_hash VARCHAR(255) NOT NULL,
+    
+    -- 用户信息
+    display_name VARCHAR(100),
+    avatar_url VARCHAR(500),
+    
+    -- 状态
+    is_active BOOLEAN DEFAULT true,
+    
+    -- 时间戳
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW(),
+    last_login_at TIMESTAMP
+);
+
+CREATE INDEX idx_users_email ON users(email);
+CREATE INDEX idx_users_username ON users(username);
+```
+
+**说明**：
+- email/username 都添加UNIQUE索引用于登录和注册验证
+- password_hash 使用bcrypt加密存储（min 60字符）
+- is_active 用于逻辑删除（不直接物理删除）
+
+---
+
+### 2. 文档表 - documents（源文件元数据）
+
+```sql
+CREATE TABLE documents (
+    id SERIAL PRIMARY KEY,
+    
+    -- 关联关系
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    
+    -- 文档信息
+    title VARCHAR(255) NOT NULL,
+    description TEXT,
+    
+    -- 存储信息
+    s3_key VARCHAR(500) NOT NULL,           -- S3完整路径
+    file_hash VARCHAR(64) NOT NULL,         -- SHA256哈希，防重复上传
+    file_size_bytes BIGINT,                 -- 文件大小
+    mime_type VARCHAR(50) DEFAULT 'application/pdf',
+    
+    -- 内容信息
+    page_count INTEGER,              -- 总页数
+    language VARCHAR(10) DEFAULT 'auto',    -- 文档主要语言
+    
+  -- 元数据
+    is_deleted BOOLEAN DEFAULT false,       -- 逻辑删除
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW(),
+    
+    -- 唯一约束：同一用户不能重复上传相同文件
+    UNIQUE(user_id, file_hash)
+);
+
+CREATE INDEX idx_documents_user ON documents(user_id);
+CREATE INDEX idx_documents_hash ON documents(file_hash);
+CREATE INDEX idx_documents_created ON documents(user_id, created_at DESC);
+```
+
+**说明**：
+- s3_key：S3中的完整路径，形如 `documents/user_123/doc_456/file.pdf`
+- file_hash：用户上传相同PDF时可以检测出来，节省存储
+- page_count：由后端在处理PDF时填充
+- language：支持用户指定或自动检测（中文、日文、韩文等）
+- 注意：**此表只存储元数据，不涉及任何修改操作**
+
+---
+
+### 3. 文档内容表 - document_content（用于搜索）
+
+```sql
+CREATE TABLE document_content (
+    id SERIAL PRIMARY KEY,
+    
+    -- 关联
+    document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    
+    -- 页码信息
+    page_num INTEGER NOT NULL,
+    
+    -- 文本内容
+    raw_text TEXT NOT NULL,         -- 原始文本
+    
+    -- 分词结果（应用层分词）
+    segmented_text TEXT,            -- 分词后文本（空格分隔）
+    
+    -- 词频统计（JSON格式）
+    word_frequency JSONB DEFAULT '{}'::jsonb,
+    
+    -- 词位置映射（用于高亮）
+    -- 格式：{"word": [[start1, end1], [start2, end2]], ...}
+    word_positions JSONB DEFAULT '{}'::jsonb,
+    
+    -- PG原生搜索向量
+    content_tsv tsvector,                   -- 用于简单搜索
+    
+    -- 时间戳
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW(),
+    
+    -- 唯一约束：每文档每页只有一条记录
+    UNIQUE(document_id, page_num)
+);
+
+-- 关键索引：倒排索引用于全文搜索
+CREATE INDEX idx_content_document ON document_content(document_id, page_num);
+CREATE INDEX idx_content_tsv ON document_content USING GIN (content_tsv);
+
+-- 可选：word_frequency查询索引
+CREATE INDEX idx_content_word_frequency ON document_content USING GIN (word_frequency);
+```
+
+**说明**：
+- raw_text：从PDF提取的原始文本，保持原样不修改
+- segmented_text：使用gse/jieba分词后的结果，词之间用空格分隔
+- word_frequency：`{"我": 5, "喜欢": 2}` 格式，用于词频分析
+- word_positions：`{"我": [[10,11], [50,51]], "喜欢": [[15,17]]}` 用于高亮
+- content_tsv：PG的tsvector格式，用于简单的LIKE搜索
+
+**示例数据**：
+```json
+{
+  "raw_text": "我喜欢阅读PDF文档和笔记",
+  "segmented_text": "我 喜欢 阅读 PDF 文档 笔记",
+  "word_frequency": {"我": 1, "喜欢": 1, "阅读": 1, "PDF": 1},
+  "word_positions": {
+    "我": [[0, 1]],
+    "喜欢": [[1, 3]],
+    "阅读": [[3, 5]],
+    "PDF": [[5, 8]],
+    "文档": [[8, 10]],
+    "笔记": [[11, 13]]
+  }
+}
+```
+
+---
+
+### 4. 高亮表 - highlights（不修改源文件）
+
+```sql
+CREATE TABLE highlights (
+    id SERIAL PRIMARY KEY,
+    
+    -- 关联关系
+    document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    
+    -- 位置信息
+    page_num INTEGER NOT NULL,
+    
+    -- 高亮内容和位置（JSON格式）
+    bbox JSONB NOT NULL,                  -- 页面坐标：{x, y, width, height}
+    highlighted_text TEXT,              -- 高亮的文本内容
+    
+    -- 高亮的分词结果（用于搜索）
+    segmented_text TEXT,
+    
+    -- 词位置映射（高亮内独有的词位置）
+    word_positions JSONB DEFAULT '{}'::jsonb,
+    
+    -- 样式
+    color VARCHAR(7) DEFAULT '#FFFF00',   -- 16进制颜色
+    
+    -- 关联的注释（可选）
+    note TEXT,                         -- 用户的注记
+    segmented_note TEXT,                    -- 注记分词结果
+    
+    -- 时间戳
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW(),
+    
+    -- 唯一约束：同一位置的高亮只有一条
+    CONSTRAINT unique_highlight UNIQUE(document_id, user_id, page_num, bbox)
+);
+
+-- 索引：快速查询某用户的某文档的所有高亮
+CREATE INDEX idx_highlights_doc_user ON highlights(document_id, user_id);
+CREATE INDEX idx_highlights_page ON highlights(document_id, page_num);
+
+-- 可选：搜索高亮内容
+CREATE INDEX idx_highlights_text ON highlights 
+    USING GIN (to_tsvector('simple', highlighted_text));
+```
+
+**说明**：
+- bbox：PDF坐标，形如 `{"x": 100, "y": 200, "width": 50, "height": 15}`
+- highlighted_text：用户选中的文本原样存储
+- segmented_text：分词后的高亮文本，用于搜索
+- note：可选的用户注释
+- color：CSS颜色，支持自定义高亮颜色
+- 关键：**源PDF文件完全不动，所有数据都在此表**
+
+**示例**：
+```json
+{
+  "document_id": 1,
+  "user_id": 100,
+  "page_num": 5,
+  "bbox": {"x": 100, "y": 200, "width": 150, "height": 20},
+  "highlighted_text": "人工智能芯片",
+  "segmented_text": "人工智能 芯片",
+  "color": "#FFFF00",
+  "note": "这是本文的核心概念"
+}
+```
+
+---
+
+### 5. 注释表 - annotations（不修改源文件）
+
+```sql
+CREATE TABLE annotations (
+    id SERIAL PRIMARY KEY,
+    
+    -- 关联关系
+    highlight_id INTEGER REFERENCES highlights(id) ON DELETE SET NULL,
+    document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    
+    -- 位置信息
+    page_num INTEGER NOT NULL,
+    position JSONB NOT NULL,                -- 注释位置 {x, y}
+    
+    -- 注释内容
+    content TEXT NOT NULL,         -- 注释文本
+    segmented_content TEXT,                 -- 分词结果
+    
+    -- 分类
+    type VARCHAR(50) DEFAULT 'comment',     -- comment/question/reminder
+    tags TEXT[] DEFAULT ARRAY[]::TEXT[],    -- 标签列表
+    
+    -- 时间戳
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE INDEX idx_annotations_doc_user ON annotations(document_id, user_id);
+CREATE INDEX idx_annotations_page ON annotations(document_id, page_num);
+CREATE INDEX idx_annotations_type ON annotations(type);
+
+-- 可选：搜索注释内容
+CREATE INDEX idx_annotations_content ON annotations 
+    USING GIN (to_tsvector('simple', content));
+```
+
+**说明**：
+- 可关联高亮（不是必须的）
+- position：注释框的位置
+- type：分类为评论、问题或提醒
+- tags：用户自定义标签，便于分类
+- **源PDF文件完全不动**
+
+---
+
+### 6. 书签表 - bookmarks（不修改源文件）
+
+```sql
+CREATE TABLE bookmarks (
+    id SERIAL PRIMARY KEY,
+    
+    -- 关联关系
+    document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    
+  -- 页码
+    page_num INTEGER NOT NULL,
+    
+    -- 书签信息
+    label VARCHAR(100),            -- 书签标签
+  segmented_label TEXT,                   -- 分词结果（用于搜索）
+    color VARCHAR(7) DEFAULT '#FF0000',     -- 书签颜色
+    
+    -- 时间戳
+    created_at TIMESTAMP DEFAULT NOW(),
+    
+    -- 唯一约束：用户在同一页最多一个书签
+    CONSTRAINT unique_bookmark UNIQUE(document_id, user_id, page_num)
+);
+
+CREATE INDEX idx_bookmarks_doc_user ON bookmarks(document_id, user_id);
+CREATE INDEX idx_bookmarks_page ON bookmarks(page_num);
+```
+
+**说明**：
+- label：书签名称，可选
+- color：书签颜色
+- 简单的页面标记，关键位置快速跳转
+- **源PDF文件完全不动**
+
+---
+
+### 7. 阅读进度表 - reading_progress
+
+```sql
+CREATE TABLE reading_progress (
+    id SERIAL PRIMARY KEY,
+    
+    -- 关联关系
+    document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    
+    -- 进度信息
+    current_page INTEGER DEFAULT 1,
+    total_pages INTEGER,
+    read_percentage NUMERIC(5,2) DEFAULT 0,
+    
+    -- 时间戳
+    last_read_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW(),
+    
+    -- 唯一约束：每用户每文档只有一条进度记录
+    UNIQUE(document_id, user_id)
+);
+
+CREATE INDEX idx_progress_user ON reading_progress(user_id);
+CREATE INDEX idx_progress_updated ON reading_progress(user_id, updated_at DESC);
+```
+
+**说明**：
+- 记录用户的阅读位置
+- last_read_at：用于"最近阅读"排序
+- read_percentage：阅读进度百分比，便于显示进度条
+
+---
+
+### 8. 标记历史表 - bookmark_history（可选审计日志）
+
+```sql
+CREATE TABLE bookmark_history (
+    id SERIAL PRIMARY KEY,
+    
+    -- 关联关系
+    document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    
+    -- 操作信息
+    action VARCHAR(50) NOT NULL,           -- create_highlight/update_note/delete_annotation
+    object_type VARCHAR(50) NOT NULL,      -- highlight/annotation/bookmark
+    object_id INTEGER,
+    
+    -- 变更详情（审计用）
+    old_value JSONB,               -- 操作前的值
+    new_value JSONB,                  -- 操作后的值
+    
+    -- 时间戳
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE INDEX idx_history_doc_user ON bookmark_history(document_id, user_id);
+CREATE INDEX idx_history_action ON bookmark_history(action);
+CREATE INDEX idx_history_created ON bookmark_history(created_at DESC);
+```
+
+**说明**：
+- 完整审计日志，记录所有标记操作
+- old_value/new_value：便于恢复和分析
+- 可选：可根据需要启用，会增加I/O
+
+---
+
+### 9. 搜索标记综合表 - searchable_marks（可选优化）
+
+```sql
+CREATE TABLE searchable_marks (
+    id SERIAL PRIMARY KEY,
+    
+    -- 关联关系
+    document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    
+    -- 标记分类
+    mark_type VARCHAR(50) NOT NULL,      -- highlight/annotation/bookmark
+    mark_id INTEGER NOT NULL,              -- 实际标记ID
+    
+    -- 位置
+    page_num INTEGER NOT NULL,
+    bbox JSONB,                     -- 可选的位置信息
+    
+    -- 内容（组合）
+    content TEXT NOT NULL,       -- 标记的主要内容
+    segmented_content TEXT,                -- 分词结果
+    
+    -- 搜索向量
+    content_tsv tsvector,                  -- PG全文搜索向量
+    
+    -- 时间戳
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+-- 关键索引：快速搜索标记
+CREATE INDEX idx_searchable_marks_tsv ON searchable_marks 
+    USING GIN (content_tsv);
+CREATE INDEX idx_searchable_marks_user ON searchable_marks(document_id, user_id);
+```
+
+**说明**：
+- **可选**：这个表是为了优化搜索性能
+- 组合了所有用户标记（高亮+注释+书签）
+- 单表搜索比JOIN多个表快
+- 由触发器或应用层保持同步
+
+---
+
+## 🔍 关键查询示例
+
+### 查询用户的所有高亮
+
+```sql
+SELECT h.* 
+FROM highlights h
+WHERE h.user_id = 123 
+  AND h.document_id = 456
+ORDER BY h.page_num, h.created_at;
+```
+
+### 全文搜索用户的标记
+
+```sql
+SELECT 
+    mark_type, 
+    page_num, 
+    content,
+    ts_rank(content_tsv, query) as score
+FROM searchable_marks,
+     plainto_tsquery('simple', '人工智能') query
+WHERE user_id = 123 
+  AND content_tsv @@ query
+ORDER BY score DESC, page_num;
+```
+
+### 导出用户的标记为Markdown
+
+```sql
+SELECT 
+    d.title,
+    h.page_num,
+    h.highlighted_text,
+    h.note,
+    h.created_at
+FROM highlights h
+JOIN documents d ON h.document_id = d.id
+WHERE h.user_id = 123
+ORDER BY h.page_num, h.created_at;
+```
+
+### 检测重复上传
+
+```sql
+SELECT * FROM documents 
+WHERE user_id = 123 
+  AND file_hash = 'abc123...'
+  AND is_deleted = false;
+```
+
+---
+
+## 📊 性能优化要点
+
+1. **索引策略**
+   - 外键字段都要索引（user_id, document_id）
+   - 查询条件的前缀列要索引
+   - GIN索引用于JSONB和tsvector
+
+2. **避免N+1查询**
+   ```sql
+   -- ❌ 避免：循环查询
+   SELECT * FROM documents WHERE user_id = 123;
+   for each doc:
+       SELECT * FROM highlights WHERE document_id = doc.id;
+   
+   -- ✅ 推荐：一次JOIN
+   SELECT h.* FROM highlights h
+   JOIN documents d ON h.document_id = d.id
+   WHERE d.user_id = 123;
+   ```
+
+3. **连接池**
+   - max_connections: 100（足够用）
+   - idle_in_transaction_session_timeout: 10分钟（自动断开空闲)
+
+4. **定期维护**
+   ```sql
+   -- 每周运行：清理WAL日志
+   VACUUM FULL;
+   REINDEX;
+   
+   -- 每天运行：自动清理
+   AUTOVACUUM = on;
+   ```
+
+---
+
+## 🔐 安全考虑
+
+1. **数据隔离** - 所有查询都带user_id过滤
+2. **物理删除 vs 逻辑删除** - documents用逻辑删除（is_deleted）
+3. **外键约束** - ON DELETE CASCADE确保数据一致
+4. **唯一约束** - 防止重复数据
+
+---
+## 总结
+
+这个数据库设计确保：
+- ✅ **源文件安全** - PDF永不修改
+- ✅ **多语言搜索** - 应用层分词，PG存储
+- ✅ **高性能** - 合理的索引和表设计
+- ✅ **数据完整** - 外键约束和唯一性保证
+- ✅ **易于扩展** - 表结构清晰，易添加新功能
+
