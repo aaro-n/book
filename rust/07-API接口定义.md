@@ -51,14 +51,14 @@
                     │ /webdav/*                       │  WebDAV 进度文件
                     └─────────────────────────────────┘
 ```
-> ★ 同步路由是私有 REST API，不属于 OPDS 标准。OPDS Fee d 中通过自定义 `rel` 链接指向它们。
+> ★ 同步路由是私有 REST API，不属于 OPDS 标准。OPDS Feed 中通过自定义 `rel` 链接指向它们。
 
 ---
 
 # 第一部分：OPDS 主干（标准协议）
 
-> OPDS 1.2 规范范围：https://specs.opeds.org/opds-1.2
-> OPDS 2.0 规范范围：https://drafts.opeds.org/opds-2.0
+> OPDS 1.2 规范范围：https://specs.opds.io/opds-1.2
+> OPDS 2.0 规范范围：https://drafts.opds.io/opds-2.0
 
 ## 📚 1. OPDS 书目目录
 
@@ -412,7 +412,7 @@
 }
 ```
 
-### 5.2 创建高亮
+### 5.3 创建高亮
 
 - **POST** `/api/v1/documents/{doc_id}/annotations`
 - **Body**（W3C Web Annotation）:
