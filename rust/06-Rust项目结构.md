@@ -2,7 +2,23 @@
 
 > Go 版本见 `../go/06-Go项目结构.md`，两者已充分对照。
 
-## 📁 完整项目目录树
+---
+
+## 🧩 三项目总览
+
+系统由三个**独立 Git 仓库**组成，互不依赖：
+
+| 项目 | 仓库名 | 技术栈 | 定位 |
+|------|--------|--------|------|
+| **服务端** | `book-server` | Rust/Axum + PG + S3 | API + 轻量 PDF 处理 + 搜索 |
+| **导入 CLI** | `book-import` | Rust CLI | 重型处理 (OCR/EPUB/大文件) → .bookpkg |
+| **阅读器** | `book-reader` | Flutter + Rust FFI | 跨平台阅读 + 本地离线搜索 |
+
+三者唯一联系：`.bookpkg` 压缩包格式。详见 `14-导入CLI工具.md`。
+
+---
+
+## 📁 服务端项目目录树
 
 ```
 pdf-manager/
@@ -40,7 +56,7 @@ pdf-manager/
 │   │   ├── bookmark_service.rs  # 标记管理服务
 │   │   ├── search_service.rs    # 搜索协调服务
 │   │   ├── segment_service.rs   # 分词服务（jieba-rs）
-│   │   ├── s3_service.rs        # S3 操作服务
+│   │   ├── s3_service.rs        # S3 操作服务（上传/删除/预签名）
 │   │   ├── opds_service.rs      # OPDS Feed 编解码服务
 │   │   └── sync_service.rs      # 阅读进度同步服务
 │   │
@@ -55,17 +71,21 @@ pdf-manager/
 │   │
 │   ├── middleware/           # Axum 中间件
 │   │   ├── mod.rs
-│   │   ├── auth.rs           # JWT 认证中间件 (from_fn)
+│   │   ├── auth.rs           # Session + API Key 认证中间件 (from_fn)
+│   │   ├── csrf.rs           # CSRF 防护中间件 (Double Submit Cookie)
 │   │   ├── error.rs          # 错误处理中间件
-│   │   └── cors.rs           # CORS 中间件
+│   │   ├── cors.rs           # CORS 中间件
+│   │   └── rate_limit.rs     # 全局限流 (tower-governor)
 │   │
 │   ├── util/                 # 工具函数
 │   │   ├── mod.rs
-│   │   ├── errors.rs         # AppError 枚举 (thiserror)
+│   │   ├── errors.rs         # AppError 枚举 (thiserror) → HTTP 状态码映射
+│   │   ├── log_mask.rs       # 日志脱敏（密码/token/email）
 │   │   ├── response.rs       # 标准 JSON 响应
 │   │   ├── validator.rs      # 数据验证 (validator derive)
 │   │   ├── segment.rs        # jieba-rs 分词封装
 │   │   ├── segment_cache.rs  # 分词缓存
+│   │   ├── presigned_cache.rs # S3 签名 URL 缓存（Redis → PG → SDK）
 │   │   ├── pdf.rs            # PDF 处理 (lopdf + pdf-extract)
 │   │   ├── hash.rs           # 哈希和加密
 │   │   └── memory.rs         # 内存监控
@@ -76,10 +96,12 @@ pdf-manager/
 │           ├── 002_add_indexes.sql
 │           └── 003_add_constraints.sql
 │
-├── tests/                    # 集成测试
-│   ├── api_test.rs
-│   ├── common/               # 测试工具
-│   │   └── mod.rs
+├── tests/                    # 集成测试（L3）
+│   ├── common/
+│   │   └── mod.rs            # setup_test_app() + setup_test_db()
+│   ├── auth_test.rs          # 注册/登录/me API 测试
+│   ├── document_test.rs      # 文档上传/列表 API 测试
+│   ├── file_test.rs          # 文件代理 /files/{key} 测试
 │   └── fixtures/
 │       └── test_data.sql
 │
@@ -208,8 +230,19 @@ pub fn build_routes(state: AppState) -> Router {
     let auth = Router::new()
         .route("/api/v1/auth/register", post(auth_handler::register))
         .route("/api/v1/auth/login", post(auth_handler::login))
-        .route("/api/v1/auth/refresh", post(auth_handler::refresh))
-        .route("/api/v1/auth/me", get(auth_handler::me));
+        .route("/api/v1/auth/logout", post(auth_handler::logout))
+        .route("/api/v1/auth/me", get(auth_handler::me))
+        .route("/api/v1/auth/password", put(auth_handler::change_password));
+
+    // ===== API Key 管理（需认证）=====
+    let api_keys = Router::new()
+        .route("/api/v1/auth/api-keys",
+            get(auth_handler::list_api_keys).post(auth_handler::create_api_key))
+        .route("/api/v1/auth/api-keys/{id}", delete(auth_handler::delete_api_key))
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            middleware::auth::require_auth,
+        ));
 
     // ===== 需认证的扩展 API（标记已统一为 W3C Web Annotation）=====
     let api = Router::new()
@@ -248,6 +281,7 @@ pub fn build_routes(state: AppState) -> Router {
         .merge(progression)
         .merge(annotations)
         .merge(auth)
+        .merge(api_keys)
         .merge(api)
         .merge(admin)
         .merge(health)
@@ -314,6 +348,10 @@ name = "pdf-manager"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+default = []
+tantivy-search = ["tantivy"]  # 开启第 3 层 Tantivy 搜索
+
 [dependencies]
 # 异步运行时
 tokio = { version = "1", features = ["full"] }
@@ -335,6 +373,9 @@ aws-config = "1"
 
 # 中文分词
 jieba-rs = "0.7"
+
+# 嵌入式全文搜索（第 3 层，可选）
+tantivy = { version = "0.22", optional = true }
 
 # PDF 处理
 lopdf = "0.34"

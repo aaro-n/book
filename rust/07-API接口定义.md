@@ -11,7 +11,7 @@
 | **同步协议** | Readium Locator（进度定位） + W3C Web Annotation（高亮/注释） |
 | **扩展协议** | RESTful JSON — 上传、词典、管理 |
 | **兼容同步** | KOReader Sync Protocol + WebDAV（第三方阅读器进度同步） |
-| **认证** | Bearer JWT（OPDS 原生支持 HTTP Basic，JWT 更灵活） |
+| **认证** | Bearer SessionToken + API Key（详见 `15-认证与安全.md`） |
 | **内容协商** | OPDS 路由通过 `Accept` 头区分 Atom XML / JSON-LD |
 | **版本** | `/opds/` 无版本号（协议自带版本），`/api/v1/` 带版本 |
 
@@ -35,7 +35,8 @@
                     ┌─────────────────────────────┐
                     │   自定义扩展（自建私有 API）  │
                     ├─────────────────────────────┤
-                    │ POST /api/v1/auth/*         │  认证（注册/登录/JWT）
+                    │ GET  /files/*               │  文件代理（→ S3 签名 URL） │
+                    │ POST /api/v1/auth/*         │  认证（注册/登录/Session）
                     │ POST /api/v1/documents/upload│ 文档上传
                     │ CRUD /api/v1/annotations/*  │  高亮/注释/书签（Web Annotation）
                     │ GET/PUT /api/v1/progression/  │ 阅读进度（OPDS Progression）
@@ -66,7 +67,7 @@
 
 - **GET** `/opds/catalog`
 - **Accept**: `application/atom+xml`
-- **Auth**: `Authorization: Bearer <token>`
+- **Auth**: `Authorization: Bearer <session_token>` 或 URL 路径 `/opds/{apiKey}/catalog`
 
 **Response** `200 OK`：
 ```xml
@@ -284,7 +285,7 @@
 ### 3.1 下载 PDF
 
 - **GET** `/opds/acquisition/{document_id}`
-- **Auth**: `Authorization: Bearer <token>`
+- **Auth**: `Authorization: Bearer <session_token>` 或 `X-API-Key: <api_key>`
 
 后端从 S3 获取预签名 URL，302 重定向（省流量），也可 `?format=url` 返回 JSON：
 ```json
@@ -442,18 +443,58 @@
 > `page=42&xywh=120,340,180,15` 表示第 42 页，坐标 (x=120, y=340)，宽 180，高 15。
 > 这是 Media Fragment URI 风格，替代 EPUB 的 DOM 选择器。
 
-### 5.3 motivation 对照表
+### 5.4 motivation 对照表（扩展）
 
-| motivation | 本项目含义 | body 是否必需 |
-|-----------|-----------|--------------|
-| `highlighting` | 高亮标记 | 否（纯高亮） |
-| `commenting` | 带笔记的高亮 | 是（`body.value` 为笔记内容） |
-| `bookmarking` | 书签 | 否 |
+| motivation | 本项目含义 | 对应 `annotation_type` | body 是否必需 |
+|-----------|-----------|----------------------|--------------|
+| `highlighting` | 高亮/划线 | `highlight` / `underline` / `squiggly` / `strikethrough` | 否 |
+| `commenting` | 带文字笔记 | `note` / `sticky_note` / `freetext` | 是 |
+| `bookmarking` | 书签 | `bookmark` | 否 |
+| `drawing` | 图形标注 | `freehand` / `circle` / `rectangle` / `line` / `polygon` / `stamp` | 可选 |
 
-### 5.4 获取文档所有标记
+### 5.5 创建标注（全类型）
+
+Flutter 客户端可创建全类型。Web 端可创建文本型标注，图形型为只读渲染。
+
+- **POST** `/api/v1/documents/{doc_id}/annotations`
+- **Body**（W3C Web Annotation 扩展）:
+```json
+{
+  "@context": "http://www.w3.org/ns/anno.jsonld",
+  "type": "Annotation",
+  "motivation": "drawing",
+  "target": {
+    "source": "/docs/101",
+    "selector": {
+      "type": "FragmentSelector",
+      "value": "page=15"
+    }
+  },
+  "body": [
+    {
+      "type": "TextualBody",
+      "value": "这个公式重要",
+      "format": "text/plain"
+    },
+    {
+      "type": "Image",
+      "value": "data:image/svg+xml;base64,...",
+      "format": "image/svg+xml"
+    }
+  ],
+  "style": {
+    "type": "freehand",
+    "color": "#FF0000",
+    "strokeWidth": 2.0
+  },
+  "device": { "id": "urn:uuid:a1b2c3d4-..." }
+}
+```
+
+### 5.6 获取文档所有标注
 
 - **GET** `/api/v1/documents/{doc_id}/annotations`
-- **Query**: `?motivation=highlighting` 只取高亮；`?page=42` 只取第 42 页
+- **Query**: `?page=42` 只取第 42 页；`?type=freehand,highlight` 过滤类型；`?search=人工智能` 全职搜索
 - **Response** `200 OK`:
 ```json
 {
@@ -464,28 +505,60 @@
 }
 ```
 
-### 5.5 更新/删除
+### 5.7 更新/删除
 
-- **PUT** `/api/v1/annotations/{id}` — 更新 `body.value` 或 `style.color`
-- **DELETE** `/api/v1/annotations/{id}` — 删除标记
+- **PUT** `/api/v1/annotations/{id}` — 更新 `body.value`、`style.color`、`stroke_data`
+- **DELETE** `/api/v1/annotations/{id}` — 软删除（`is_deleted=true`）
+
+> **Web 端渲染**：GET 标注后，文本型 → CSS 绝对定位覆盖；图形型 → 读取 `stroke_data` 中的 SVG path 用 Canvas/SVG 绘制。Web 端无法创建手写/涂鸦，但可**完整展示**所有类型。
 
 ---
 
 ## 📤 6. 文档上传（扩展）
 
 - **POST** `/api/v1/documents/upload`
-  - `multipart/form-data`, file + title + tags
+  - `multipart/form-data`, file (pdf/epub) + title + tags
+  - 服务端自动检测文档类型，能力范围内直接处理，超范围的返回提示
+- **POST** `/api/v1/documents/import`
+  - `multipart/form-data`, file (.bookpkg) — CLI 预处理的打包文件直接导入
 - **GET** `/api/v1/documents/{id}/status`
   - 状态: `processing` → `ready` → `error`
+  - `error` 时附带 `hint` 字段提示下一步操作
+
+---
+
+## 📎 6.1. 文档内容访问（扩展）
+
+> **完整设计见** `16-S3存储方案.md`。所有 S3 文件通过 302 跳转到签名 URL（含 CDN）。
+> 签名 URL 缓存：Redis → PG → S3 SDK，有效期 30 天。
+
+| API | 说明 |
+|-----|------|
+| **GET** `/files/{s3_key}` | 统一文件代理端点 → 302 → CDN/S3 |
+| **GET** `/api/v1/documents/{id}/pages?format=url` | 返回所有页面的完整 URL 列表（Flutter 客户端一次性获取，缓存 30 天） |
+| **GET** `/api/v1/documents/{id}/cover` | 封面（→ 302 → CDN/S3） |
+
+> 前端 HTML：`<img src="/files/{doc_id}/thumbs/001.jpg">`、`<embed src="/files/{doc_id}/pages/001.pdf">`
+> Flutter：`GET /api/v1/documents/{id}/pages?format=url` 一次性拿全部 URL 存本地。
 
 ---
 
 ## 🔐 7. 认证模块（扩展）
 
-- **POST** `/api/v1/auth/register`
-- **POST** `/api/v1/auth/login`
-- **POST** `/api/v1/auth/refresh`
-- **GET** `/api/v1/auth/me`
+> **完整设计见** `15-认证与安全.md`。此处仅列出端点摘要。
+>
+> 认证方案：Session Token（Redis, 7天）+ API Key（SHA256 存储）。不用 JWT。
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| **POST** | `/api/v1/auth/register` | 注册（注册即登录，返回 token） |
+| **POST** | `/api/v1/auth/login` | 登录（返回 token + Set-Cookie） |
+| **POST** | `/api/v1/auth/logout` | 登出（删除 session） |
+| **GET** | `/api/v1/auth/me` | 获取当前用户信息 |
+| **PUT** | `/api/v1/auth/password` | 修改密码（踢出所有设备） |
+| **GET** | `/api/v1/auth/api-keys` | 列出 API Key |
+| **POST** | `/api/v1/auth/api-keys` | 创建 API Key（明文仅展示一次） |
+| **DELETE** | `/api/v1/auth/api-keys/{id}` | 删除 API Key |
 
 ---
 

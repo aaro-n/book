@@ -20,7 +20,7 @@
 | **S3 客户端** | AWS SDK Go v2 | aws-sdk-s3 (Rust) | AWS 官方 Rust SDK，1.0 已发布 |
 | **中文分词** | gse + jieba (Go) | jieba-rs | Rust 版结巴，成熟稳定 |
 | **PDF 处理** | pdfcpu | lopdf + pdf-extract | lopdf 读/写，pdf-extract 提取文本 |
-| **JWT 认证** | golang-jwt v5 | jsonwebtoken | 功能完整 |
+| **Session 认证** | golang-jwt v5 | Redis + bcrypt | Rust 用 Session 方案（代码量 1/3），详见 `15-认证与安全.md` |
 | **日志/追踪** | zap | tracing + tracing-subscriber | 结构化日志 + 分布式追踪 |
 | **序列化** | encoding/json | serde + serde_json | 编译期序列化，零成本 |
 | **配置管理** | viper | config + serde_yaml | 类型安全反序列化 |
@@ -41,28 +41,18 @@ tokio = { version = "1", features = ["full"] }
 # Web 框架
 axum = "0.7"
 tower = "0.4"
-tower-http = { version = "0.5", features = ["cors", "trace", "auth"] }
+tower-http = { version = "0.5", features = ["cors", "trace", "limit"] }
 
 # 数据库
 sqlx = { version = "0.8", features = ["runtime-tokio", "tls-rustls", "postgres", "chrono", "uuid"] }
 
-# Redis
+# Redis + Session / 密码
 redis = { version = "0.25", features = ["tokio-comp", "connection-manager"] }
-
-# S3
-aws-sdk-s3 = "1"
-aws-config = "1"
-aws-credential-types = "1"
-
-# 中文分词
-jieba-rs = "0.7"
-
-# PDF 处理
-lopdf = "0.34"
-pdf-extract = "0.8"
-
-# JWT
-jsonwebtoken = "9"
+bcrypt = "0.16"
+rand = "0.8"
+base64 = "0.22"
+sha2 = "0.10"
+hex = "0.4"
 
 # 序列化
 serde = { version = "1", features = ["derive"] }
@@ -76,13 +66,11 @@ serde_yaml = "0.9"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
-# 密码哈希
-bcrypt = "0.15"
+# 限流
+tower-governor = "0.4"
 
-# UUID
+# UUID + 时间
 uuid = { version = "1", features = ["v4", "serde"] }
-
-# 时间
 chrono = { version = "0.4", features = ["serde"] }
 
 # 错误处理
@@ -91,13 +79,28 @@ thiserror = "2"
 
 # 参数校验
 validator = { version = "0.18", features = ["derive"] }
+regex = "1"
+lazy_static = "1"
 
 # 工具
 dotenvy = "0.15"
 
 [dev-dependencies]
-tower = { version = "0.4", features = ["util"] }  # 测试用
-axum-test = "15"                                    # 集成测试
+# HTTP 测试
+axum-test = "15"                                    # Axum 集成测试
+tower = { version = "0.4", features = ["util"] }    # 测试用
+
+# Mock
+mockall = "0.13"                    # Mock trait 实现
+mockall_double = "0.3"             # 编译期 mock 替换
+
+# 数据库测试（SQLite 替代 PG）
+sqlx = { version = "0.8", features = ["sqlite"] }
+
+# 测试辅助
+tokio-test = "0.4"                  # tokio 测试 runtime
+pretty_assertions = "1"             # 彩色 diff 断言
+serial_test = "3"                   # 串行执行（SQLite 文件冲突）
 ```
 
 ---
