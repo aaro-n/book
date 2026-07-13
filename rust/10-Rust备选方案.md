@@ -19,7 +19,7 @@
 | **缓存客户端** | go-redis v8 | redis-rs 0.25+ | 官方客户端，async 支持 |
 | **S3 客户端** | AWS SDK Go v2 | aws-sdk-s3 (Rust) | AWS 官方 Rust SDK，1.0 已发布 |
 | **中文分词** | gse + jieba (Go) | jieba-rs | Rust 版结巴，成熟稳定 |
-| **PDF 处理** | pdfcpu | lopdf + pdf-extract | lopdf 读/写，pdf-extract 提取文本 |
+| **PDF 处理** | pdfcpu | pdf-extract | 纯文字提取，简单可靠 |
 | **Session 认证** | golang-jwt v5 | Redis + bcrypt | Rust 用 Session 方案（代码量 1/3），详见 `15-认证与安全.md` |
 | **日志/追踪** | zap | tracing + tracing-subscriber | 结构化日志 + 分布式追踪 |
 | **序列化** | encoding/json | serde + serde_json | 编译期序列化，零成本 |
@@ -81,6 +81,15 @@ thiserror = "2"
 validator = { version = "0.18", features = ["derive"] }
 regex = "1"
 lazy_static = "1"
+
+# PDF 处理
+pdf-extract = "0.12"      # 纯文字提取
+
+# URL/IRI 验证
+url = "2.5"
+
+# 中文分词
+jieba-rs = "0.7"
 
 # 工具
 dotenvy = "0.15"

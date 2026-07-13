@@ -77,16 +77,25 @@ pdf-manager/
 │   │   ├── cors.rs           # CORS 中间件
 │   │   └── rate_limit.rs     # 全局限流 (tower-governor)
 │   │
+│   ├── pdf/              # PDF 处理（纯文字提取）
+│   │   ├── mod.rs
+│   │   └── extract.rs    # 文字提取（pdf-extract）
+│   │
+│   ├── sync/                 # 同步模块（新增）
+│   │   ├── mod.rs
+│   │   ├── handler.rs        # 同步 API 端点
+│   │   ├── conflict.rs       # 冲突解决逻辑
+│   │   └── device.rs         # 设备追踪
+│   │
 │   ├── util/                 # 工具函数
 │   │   ├── mod.rs
 │   │   ├── errors.rs         # AppError 枚举 (thiserror) → HTTP 状态码映射
 │   │   ├── log_mask.rs       # 日志脱敏（密码/token/email）
 │   │   ├── response.rs       # 标准 JSON 响应
-│   │   ├── validator.rs      # 数据验证 (validator derive)
+│   │   ├── validator.rs      # 数据验证 (validator derive + W3C 校验)
 │   │   ├── segment.rs        # jieba-rs 分词封装
 │   │   ├── segment_cache.rs  # 分词缓存
 │   │   ├── presigned_cache.rs # S3 签名 URL 缓存（Redis → PG → SDK）
-│   │   ├── pdf.rs            # PDF 处理 (lopdf + pdf-extract)
 │   │   ├── hash.rs           # 哈希和加密
 │   │   └── memory.rs         # 内存监控
 │   │
@@ -146,6 +155,8 @@ mod middleware;
 mod models;
 mod repository;
 mod service;
+mod pdf;
+mod sync;
 mod util;
 
 #[tokio::main]
@@ -378,8 +389,7 @@ jieba-rs = "0.7"
 tantivy = { version = "0.22", optional = true }
 
 # PDF 处理
-lopdf = "0.34"
-pdf-extract = "0.8"
+pdf-extract = "0.12"
 
 # JWT
 jsonwebtoken = "9"
