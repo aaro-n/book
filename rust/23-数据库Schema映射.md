@@ -2,7 +2,7 @@
 
 > **定位**：将 `20-数据模型实现.md` 中的 Rust 结构体映射到 `04-数据库设计.md` 的实际表结构。
 > **核心原则**：**旁路（Sidecar）存储** — PDF 源文件永远不修改，所有标注数据存 PG JSONB。
-> **更新日期**：2026-07-13
+> **更新日期**：2026-07-14
 
 ---
 
@@ -41,20 +41,27 @@ CREATE TABLE annotations (
     locator_locations JSONB,                  -- Locator.locations (完整 JSON)
     locator_text JSONB,                       -- Locator.text (完整 JSON)
     
-    -- === Selector 字段（W3C 选择器） ===
-    -- 对应 src/models/annotation.rs 的 Selector enum
-    selector_type TEXT,                       -- "text_quote" | "fragment" | "css"
-    selector_data JSONB,                      -- 完整 Selector JSON
+    -- === Selector 字段（W3C 选择器，支持多选择器冗余） ===
+    -- 对应 src/models/annotation.rs 的 SelectorList enum
+    -- 支持单个或数组（多选择器冗余策略，详见文档 20）
+    selector_type TEXT,                       -- "text_quote" | "fragment" | "css" | "xpath" | "range" | "text_position" | "progression"
+    selector_data JSONB,                      -- 完整 Selector JSON（单个或数组）
     
     -- === Body 字段（用户笔记） ===
     text_body TEXT,                           -- TextualBody.value
-    body_format VARCHAR(20),                  -- "text/plain" | "text/html"
+    text_body_format VARCHAR(20) DEFAULT 'text/plain',  -- "text/plain" | "text/markdown" | "text/html"
+    context TEXT,                             -- 标注位置上下文文本（创建时计算，不更新）
     
     -- 标注类型 + 样式
     annotation_type VARCHAR(20) NOT NULL,
-    color VARCHAR(7) DEFAULT '#FFFF00',
+    color VARCHAR(9) DEFAULT '#FFFF00',       -- #RRGGBB 或 #RRGGBBAA
     opacity REAL DEFAULT 0.3,
     motivation VARCHAR(20) NOT NULL,
+
+    -- 标注元数据
+    tags TEXT[] DEFAULT '{}',                 -- 用户自定义标签
+    contains_spoiler BOOLEAN DEFAULT false,    -- 剧透标记
+    metadata JSONB DEFAULT '{}',               -- 应用特定扩展字段（extras）
     
     -- W3C 时间
     created_iso VARCHAR(35),                  -- ISO 8601 创建时间
@@ -94,6 +101,15 @@ CREATE INDEX idx_ann_selector_type ON annotations(selector_type);
 | `Selector::TextQuoteSelector` | TextQuoteSelector | `selector_type="text_quote"` | `selector_data` 存完整 JSON |
 | `Selector::FragmentSelector` | FragmentSelector | `selector_type="fragment"` | 同上 |
 | `Selector::CssSelector` | CssSelector | `selector_type="css"` | 同上 |
+| `Selector::XPath` | XPathSelector | `selector_type="xpath"` | 同上 |
+| `Selector::RangeSelector` | RangeSelector | `selector_type="range"` | 同上（Phase 2） |
+| `Selector::TextPositionSelector` | TextPositionSelector | `selector_type="text_position"` | 同上 |
+| `Selector::ProgressionSelector` | ProgressionSelector | `selector_type="progression"` | 同上 |
+| `SelectorList::Multiple` | `Vec<Selector>` | `selector_type="multi"` | `selector_data` 存 JSON 数组 |
+
+> **多选择器冗余策略**：同一标注可携带多种选择器（如 FragmentSelector + TextQuoteSelector），
+> 提高跨平台兼容性。`selector_type="multi"` 时 `selector_data` 为 JSON 数组。
+> 客户端按优先级使用：TextQuoteSelector > FragmentSelector > CssSelector > XPath。
 
 ### 3.3 Annotation → 数据库字段
 
@@ -101,7 +117,16 @@ CREATE INDEX idx_ann_selector_type ON annotations(selector_type);
 |-----------|------|-----------|------|
 | `Annotation.id` | String | `w3c_id` | W3C IRI |
 | `Annotation.target` | AnnotationTarget | 分解存储 | source → page_num, selector → selector_data |
-| `Annotation.body` | Option\<AnnotationBody\> | `text_body` + `body_format` | 展开存储 |
+| `Annotation.body` | Option\<AnnotationBody\> | `text_body` + `text_body_format` | 展开存储 |
+| `Annotation.motivation` | AnnotationMotivation | `motivation` | 字符串 |
+| `Annotation.created` | String | `created_iso` | ISO 8601 |
+| `Annotation.modified` | Option\<String\> | `modified_iso` | ISO 8601 |
+| `Annotation.text_direction` | Option\<TextDirection\> | `metadata` JSONB | 国际化 |
+| `Annotation.processing_language` | Option\<String\> | `metadata` JSONB | 国际化 |
+| `Annotation.canonical` | Option\<String\> | `metadata` JSONB | 跨系统去重 |
+| `Annotation.via` | Option\<String\> | `metadata` JSONB | 来源追溯 |
+| `Annotation.tags` | Vec\<String\> | `tags` TEXT[] | 用户自定义标签 |
+| `Annotation.contains_spoiler` | Option\<bool\> | `contains_spoiler` | 剧透标记 |
 | `Annotation.motivation` | AnnotationMotivation | `motivation` | 字符串 |
 | `Annotation.created` | String | `created_iso` | ISO 8601 |
 
@@ -217,3 +242,59 @@ async fn get_annotation(pool: &PgPool, id: i32) -> Result<(Annotation, Locator)>
   "suffix": "这是后文"
 }
 ```
+
+### selector_data 字段（多选择器冗余 — selector_type="multi"）
+
+```json
+[
+  {
+    "type": "FragmentSelector",
+    "value": "page=42&xywh=120,340,180,15",
+    "conformsTo": "http://tools.ietf.org/rfc/rfc3778"
+  },
+  {
+    "type": "TextQuoteSelector",
+    "exact": "高亮的文本内容",
+    "prefix": "这是前文",
+    "suffix": "这是后文"
+  }
+]
+```
+
+### metadata 字段（扩展数据）
+
+```json
+{
+  "textDirection": "ltr",
+  "processingLanguage": "zh",
+  "canonical": "urn:uuid:cross-system-id",
+  "via": "urn:uuid:source-annotation-id"
+}
+```
+
+---
+
+## 六、reading_progress 表映射（增加 device 字段）
+
+```sql
+CREATE TABLE reading_progress (
+    id SERIAL PRIMARY KEY,
+    document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    current_page INTEGER DEFAULT 1,
+    total_pages INTEGER,
+    read_percentage NUMERIC(5,2) DEFAULT 0,
+    device_id VARCHAR(64),                   -- 哪台设备上报的进度
+    device_name VARCHAR(100),                 -- 人类可读设备名
+    last_read_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(document_id, user_id)
+);
+```
+
+| Rust 字段 | 类型 | 数据库字段 | 说明 |
+|-----------|------|-----------|------|
+| `Progression.device.id` | String | `device_id` | 设备唯一 ID |
+| `Progression.device.name` | String | `device_name` | 设备可读名称 |
+| `Progression.progression` | f64 | `read_percentage` | 进度 0.0~1.0 |
+| `Progression.modified` | DateTime | `updated_at` | 最后更新时间 |

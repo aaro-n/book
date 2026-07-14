@@ -1,7 +1,7 @@
 # Web Annotation 验证方案
 
 > **定位**：在 Rust 后端实现 W3C Web Annotation 数据模型验证，参考 `other/validate-web-annotation/` 项目。
-> **更新日期**：2026-07-13
+> **更新日期**：2026-07-14
 
 ---
 
@@ -128,6 +128,72 @@ impl Annotation {
 }
 ```
 
+### 2.5 多选择器验证
+
+```rust
+impl SpecificResource {
+    /// 验证选择器列表：多选择器时每个都必须有效
+    pub fn validate_selectors(&self) -> bool {
+        match &self.selector {
+            Some(SelectorList::Single(s)) => s.is_valid(),
+            Some(SelectorList::Multiple(list)) => {
+                !list.is_empty() && list.iter().all(|s| s.is_valid())
+            }
+            None => false, // target 必须有 selector
+        }
+    }
+}
+
+impl Selector {
+    /// 各选择器类型的验证规则
+    pub fn is_valid(&self) -> bool {
+        match self {
+            Self::FragmentSelector(fs) => !fs.value.is_empty(),
+            Self::TextQuoteSelector(tqs) => !tqs.exact.is_empty(),
+            Self::CssSelector(css) => !css.value.is_empty(),
+            Self::XPath(xpath) => !xpath.value.is_empty(),
+            Self::TextPositionSelector(tps) => tps.end >= tps.start,
+            Self::ProgressionSelector(ps) => (0.0..=1.0).contains(&ps.value),
+            Self::RangeSelector(rs) => rs.start_selector.is_valid() && rs.end_selector.is_valid(),
+        }
+    }
+}
+```
+
+### 2.6 textDirection 验证
+
+```rust
+impl Annotation {
+    /// 验证文本方向（如果存在）
+    pub fn validate_text_direction(&self) -> bool {
+        match &self.text_direction {
+            None => true, // 可选字段
+            Some(TextDirection::Auto) | Some(TextDirection::Ltr) | Some(TextDirection::Rtl) => true,
+        }
+        // serde 反序列化已保证值合法，此处仅做存在性检查
+    }
+}
+```
+
+### 2.7 富文本格式验证
+
+```rust
+impl Annotation {
+    /// 验证 body.format 是否为支持的格式
+    pub fn validate_body_format(&self) -> bool {
+        match &self.body {
+            Some(AnnotationBody::Textual(tb)) => {
+                match &tb.format {
+                    None => true, // 默认 text/plain
+                    Some(fmt) => matches!(fmt.as_str(), "text/plain" | "text/markdown" | "text/html"),
+                }
+            }
+            _ => true,
+        }
+    }
+}
+```
+
 ---
 
 ## 三、验证测试用例
@@ -242,9 +308,17 @@ async fn create_annotation(
 | `type` | 必须为 "Annotation" | ✅ MVP |
 | `id` | 必须是 IRI 格式 | ✅ MVP |
 | `target` | 必须存在 | ✅ MVP |
+| `target.selector` | 必须存在且有效（支持多选择器） | ✅ MVP |
 | `motivation` | 必须是合法值 | ✅ MVP |
 | `bodyValue` vs `body` | 互斥 | ✅ MVP |
 | `created` | ISO 8601 格式 | ✅ MVP |
 | `selector.exact` | TextQuoteSelector 时非空 | ✅ MVP |
+| `selector.value` | FragmentSelector 时非空 | ✅ MVP |
+| `text_body_format` | 必须是 `text/plain` / `text/markdown` / `text/html` | ✅ MVP |
+| `textDirection` | 如果存在，必须是 `auto` / `ltr` / `rtl` | ✅ MVP |
+| `ProgressionSelector.value` | 必须在 0.0 ~ 1.0 范围内 | ✅ MVP |
+| `TextPositionSelector` | `end` >= `start` | ✅ MVP |
 | `selector.value` | FragmentSelector 时非空 | Phase 2 |
 | `body.format` | 必须是合法 MIME | Phase 2 |
+| `refinedBy` | 嵌套选择器递归验证 | Phase 2 |
+| `RangeSelector` | startSelector 和 endSelector 都有效 | Phase 2 |

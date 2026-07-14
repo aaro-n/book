@@ -391,8 +391,8 @@ tantivy = { version = "0.22", optional = true }
 # PDF 处理
 pdf-extract = "0.12"
 
-# JWT
-jsonwebtoken = "9"
+# 密码哈希
+bcrypt = "0.15"
 
 # 序列化
 serde = { version = "1", features = ["derive"] }

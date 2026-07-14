@@ -448,34 +448,28 @@ use axum::{
     middleware::Next,
     response::Response,
 };
-use jsonwebtoken::{decode, DecodingKey, Validation, Algorithm};
-use crate::AppState;
+use crate::{AppState, models::UserContext, util::errors::AppError};
 
-#[derive(Debug, serde::Deserialize)]
-struct Claims {
-    sub: i32,       // user_id
-    exp: usize,
-}
-
-/// JWT 认证中间件
+/// Session Token 认证中间件（详见 15-认证与安全.md）
+/// 从 Cookie / Authorization Header 提取 Session Token，Redis 验证后注入 UserContext
 pub async fn require_auth(
     State(state): State<AppState>,
     mut req: Request,
     next: Next,
-) -> Result<Response, StatusCode> {
-    let token = req.headers()
-        .get("Authorization")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "))
-        .ok_or(StatusCode::UNAUTHORIZED)?;
+) -> Result<Response, AppError> {
+    let token = extract_session_token(&req)?;
 
-    let claims = decode::<Claims>(
-        token,
-        &DecodingKey::from_secret(state.jwt_secret.as_bytes()),
-        &Validation::new(Algorithm::HS256),
-    ).map_err(|_| StatusCode::UNAUTHORIZED)?;
+    let session_key = format!("session:{token}");
+    let user_json: String = state.redis.get(&session_key).await
+        .map_err(|_| AppError::Unauthorized("未登录或会话已过期".into()))?;
 
-    req.extensions_mut().insert(claims.claims.sub);
+    let user: UserContext = serde_json::from_str(&user_json)
+        .map_err(|_| AppError::Unauthorized("会话数据异常".into()))?;
+
+    // 续期：每次请求刷新 TTL
+    let _ = state.redis.expire(&session_key, 604800).await; // 7 天
+
+    req.extensions_mut().insert(user);
     Ok(next.run(req).await)
 }
 ```
@@ -499,8 +493,9 @@ CREATE TABLE IF NOT EXISTS reading_progress (
     document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
     page_num INTEGER NOT NULL DEFAULT 1,
     percentage REAL NOT NULL DEFAULT 0,
-    device VARCHAR(200),
-    updated_at TIMESTAMP DEFAULT NOW(),
+    device_id VARCHAR(64),
+    device_name VARCHAR(100),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
     UNIQUE(user_id, document_id)
 );
 ```
@@ -840,7 +835,7 @@ let kosync = Router::new()
 
 | 特性 | KOReader Sync | 私有 API (OPDS Progression) |
 |------|:---:|:---:|
-| 认证方式 | X-Auth-User/Key (MD5) | Bearer JWT |
+| 认证方式 | X-Auth-User/Key (MD5) | Bearer Session Token |
 | 文档标识 | MD5 哈希 | 文档 ID |
 | 进度格式 | 字符串 (KOReader 内部格式) | 百分比 (0.0~1.0) |
 | 高亮/注释 | ❌ 不支持 | ✅ Web Annotation |
